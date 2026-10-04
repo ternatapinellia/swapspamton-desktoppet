@@ -13,16 +13,39 @@ for %%F in (
     index.py
     dialogues.py
     SPT_dialogue_pack.py
-    pet1.png
-    pet2.png
-    bubble.png
-    panel.png
-    panel2.png
-    message.ico
     SPT-DeskPet.spec
 ) do (
     if not exist "%%F" (
         echo Missing %%F
+        pause
+        exit /b 1
+    )
+)
+
+if not exist "image" (
+    echo Missing image folder
+    pause
+    exit /b 1
+)
+
+for %%F in (
+    pet1.png
+    pet2.png
+    pet3.png
+    pet4.png
+    pet5.png
+    pet6.png
+    pet7.png
+    pet8.png
+    pet9.png
+    pet10.png
+    bubble.png
+    panel.png
+    panel2.png
+    message.ico
+) do (
+    if not exist "image\%%F" (
+        echo Missing image\%%F
         pause
         exit /b 1
     )
@@ -79,10 +102,17 @@ if exist GAMES (
     xcopy /E /I /Y GAMES dist\GAMES >nul
 )
 
+if exist image (
+    xcopy /E /I /Y image dist\image >nul
+)
+
 if exist dist\SPT-DeskPet.exe (
     echo.
     echo Build complete:
     echo dist\SPT-DeskPet.exe
+    echo.
+    echo External image folder:
+    echo dist\image
     echo.
 ) else (
     echo EXE was not created.

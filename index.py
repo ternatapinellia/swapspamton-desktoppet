@@ -26,11 +26,17 @@ from PyQt5.QtMultimedia import QSoundEffect
 
 # ---------- Resource / writable data paths ----------
 def resource_path(relative_path):
-    """Read bundled/static resources from the application directory."""
+    """读取 EXE 同级 image 文件夹中的图片资源。"""
     if getattr(sys, "frozen", False):
         base_path = os.path.dirname(os.path.abspath(sys.executable))
     else:
         base_path = os.path.dirname(os.path.abspath(__file__))
+
+    image_path = os.path.join(base_path, "image", relative_path)
+    if os.path.exists(image_path):
+        return image_path
+
+    # 源码运行兼容：如果资源仍放在程序目录，也允许读取。
     return os.path.join(base_path, relative_path)
 
 
@@ -1472,164 +1478,96 @@ class GamesWindow(BasePanel):
 
     def _render_deal(self, layout):
         status = self.game.status()
-        self._deal_selected = getattr(self, "_deal_selected", set())
-        need = self.game.ROUNDS[min(self.game.round, len(self.game.ROUNDS)-1)]
-
         if self.game.over:
             if self.game.result is not None:
-                self._set_status(f"游戏结束：¥{self.game.result}" if self.lang == "zh" else f"Game over: ¥{self.game.result}")
+                self._set_status(
+                    (f"游戏结束：你成交了 ¥{self.game.result}" if self.lang == "zh"
+                     else f"Game over: Deal accepted for ¥{self.game.result}"))
             else:
                 self._set_status("游戏结束" if self.lang == "zh" else "Game over")
         elif self.game.offer is not None:
-            self._set_status(f"庄家报价：¥{self.game.offer}" if self.lang == "zh" else f"Banker offer: ¥{self.game.offer}")
+            self._set_status(
+                (f"庄家报价：¥{self.game.offer}" if self.lang == "zh"
+                 else f"Banker offer: ¥{self.game.offer}"))
         elif self.game.player_case is None:
             self._set_status("请先选择你的最终箱子" if self.lang == "zh" else "Choose your final case first.")
         else:
             self._set_status(
-                f"第 {self.game.round + 1} 轮：需要开启 {need} 个箱子，已选择 {len(self._deal_selected)}/{need}"
-                if self.lang == "zh" else f"Round {self.game.round + 1}: select {len(self._deal_selected)}/{need} cases."
-            )
-
-        if self.game.player_case is not None:
-            own = QLabel(f"你的最终箱子：{self.game.player_case}号" if self.lang == "zh" else f"Your final case: {self.game.player_case}")
-            own.setAlignment(Qt.AlignCenter)
-            own.setStyleSheet(f"font-size:{int(16*self.scale)}px;font-weight:bold;color:#1a1a2c;background:transparent;")
-            layout.addWidget(own)
-
-            info = QLabel(
-                f"本轮需要开启 {need} 个箱子　已选择 {len(self._deal_selected)}/{need}"
-                if self.lang == "zh" else f"This round: {len(self._deal_selected)}/{need} cases selected"
-            )
-            info.setAlignment(Qt.AlignCenter)
-            info.setStyleSheet(f"font-size:{int(14*self.scale)}px;color:#333;background:transparent;")
-            layout.addWidget(info)
-
-        # 箱子和下面的操作区必须是两个独立的区域。
-        # 箱子滚动区域内部同时承载“本次开箱”记录，避免记录把外面的按钮往下挤。
-        box_scroll = QScrollArea()
-        box_scroll.setWidgetResizable(True)
-        box_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        box_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        box_scroll.setFrameShape(QScrollArea.NoFrame)
-        box_scroll.setMinimumHeight(int(100*self.scale))
-        box_scroll.setMaximumHeight(int(125*self.scale))
-        box_scroll.setStyleSheet(
-            "QScrollArea{background:transparent;border:none;}"
-            "QScrollBar:vertical{width:8px;background:#e5e5e5;border-radius:4px;}"
-            "QScrollBar::handle:vertical{min-height:24px;background:#888;border-radius:4px;}"
-            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0px;}"
-        )
-
-        box_page = QWidget()
-        box_page.setStyleSheet("background:transparent;")
-        box_layout = QVBoxLayout(box_page)
-        box_layout.setSpacing(int(4*self.scale))
-        box_layout.setContentsMargins(int(4*self.scale), int(4*self.scale), int(4*self.scale), int(4*self.scale))
-        box_layout.setAlignment(Qt.AlignTop)
-
+                (f"已开 {status['opened']} 箱，剩余 {status['remaining_count']} 箱"
+                 if self.lang == "zh"
+                 else f"Opened: {status['opened']} | Remaining: {status['remaining_count']}"))
+        self._deal_selected = getattr(self, "_deal_selected", set())
         grid = QGridLayout()
         grid.setSpacing(int(3*self.scale))
-        grid.setContentsMargins(0, 0, 0, 0)
-        visible = 0
         for n in range(1, 27):
             if n in self.game.opened or n == self.game.player_case:
                 continue
             label = f"✓ {n}" if n in self._deal_selected else str(n)
             b = self._new_button(label, lambda checked=False, x=n: self._deal_select(x))
             b.setFixedSize(int(58*self.scale), int(31*self.scale))
-            grid.addWidget(b, visible // 5, visible % 5)
-            visible += 1
-        box_layout.addLayout(grid)
-
-        last = getattr(self, "_deal_last_opened", [])
-        if last:
-            title = QLabel("本次开箱：" if self.lang == "zh" else "Opened:")
-            title.setAlignment(Qt.AlignCenter)
-            title.setStyleSheet(f"font-size:{int(13*self.scale)}px;font-weight:bold;color:#333;background:transparent;")
-            box_layout.addWidget(title)
-            for case, value in last:
-                lab = QLabel(f"{case}号箱：¥{value}" if self.lang == "zh" else f"Case {case}: ¥{value}")
-                lab.setAlignment(Qt.AlignCenter)
-                lab.setStyleSheet(f"font-size:{int(12*self.scale)}px;color:#333;background:transparent;")
-                box_layout.addWidget(lab)
-
-        box_scroll.setWidget(box_page)
-        layout.addWidget(box_scroll)
-
-        # 下面这一块永远在箱子滚动区域之外，不参与箱子布局。
-        open_btn = self._new_button("开箱" if self.lang == "zh" else "Open", self._deal_open_selected)
-        open_btn.setMinimumHeight(int(34*self.scale))
+            grid.addWidget(b, (n-1)//5, (n-1)%5)
+        layout.addLayout(grid)
+        open_btn = self._new_button("开箱" if self.lang == "zh" else "Open",
+                                    self._deal_open_selected)
         layout.addWidget(open_btn)
-
         if self.game.offer is not None:
-            offer = QLabel(f"庄家报价：¥{self.game.offer}" if self.lang == "zh" else f"Banker offer: ¥{self.game.offer}")
+            offer = QLabel(
+                (f"庄家报价：¥{self.game.offer}" if self.lang == "zh"
+                 else f"Banker offer: ¥{self.game.offer}")
+            )
             offer.setAlignment(Qt.AlignCenter)
-            offer.setStyleSheet(f"font-size:{int(17*self.scale)}px;font-weight:bold;color:#1a1a2c;background:transparent;")
+            offer.setStyleSheet(
+                f"font-size:{int(19*self.scale)}px;font-weight:bold;"
+                "color:#1a1a2c;background:transparent;"
+            )
             layout.addWidget(offer)
             row = QHBoxLayout()
-            row.setSpacing(int(6*self.scale))
-            deal_btn = self._new_button("Deal" if self.lang == "en" else "成交", lambda: self._deal_respond(True))
-            no_deal_btn = self._new_button("No Deal" if self.lang == "en" else "继续", lambda: self._deal_respond(False))
-            deal_btn.setMinimumHeight(int(34*self.scale))
-            no_deal_btn.setMinimumHeight(int(34*self.scale))
-            row.addWidget(deal_btn)
-            row.addWidget(no_deal_btn)
+            row.addWidget(self._new_button("Deal" if self.lang == "en" else "成交",
+                                           lambda: self._deal_respond(True)))
+            row.addWidget(self._new_button("No Deal" if self.lang == "en" else "继续",
+                                           lambda: self._deal_respond(False)))
             layout.addLayout(row)
 
     def _deal_select(self, n):
+        # 开局第一步必须先由玩家选择自己的最终箱子。
         if self.game.player_case is None:
-            self._deal_last_opened = getattr(self, "_deal_last_opened", [])
             try:
                 r = self.game.choose_case(n)
                 if not r.get("ok"):
                     self._set_status(r.get("reason", ""))
                     return
                 self._deal_selected.clear()
-                self._deal_last_opened = []
+                self._set_status(
+                    f"你的最终箱子是 {n}，请选择其他箱子开箱"
+                    if self.lang == "zh" else
+                    f"Your final case is {n}. Select other cases to open."
+                )
             except Exception as e:
                 self._set_status(str(e))
                 return
             self._render_current_game()
             return
 
-        if n == self.game.player_case:
-            self._set_status("不能打开自己的最终箱子" if self.lang == "zh" else "You cannot open your final case.")
-            return
-
-        need = self.game.ROUNDS[min(self.game.round, len(self.game.ROUNDS)-1)]
         if n in self._deal_selected:
             self._deal_selected.remove(n)
         else:
-            if len(self._deal_selected) >= need:
-                self._set_status(f"本轮最多选择 {need} 个箱子" if self.lang == "zh" else f"You can select only {need} cases this round.")
-                return
             self._deal_selected.add(n)
         self._render_current_game()
 
     def _deal_open_selected(self):
-        need = self.game.ROUNDS[min(self.game.round, len(self.game.ROUNDS)-1)]
-        if len(self._deal_selected) != need:
-            self._set_status(
-                f"本轮需要开启 {need} 个箱子，目前选择 {len(self._deal_selected)} 个"
-                if self.lang == "zh" else
-                f"This round requires {need} cases; {len(self._deal_selected)} selected.")
+        if not self._deal_selected:
+            self._set_status("请选择箱子" if self.lang == "zh" else "Select cases first.")
             return
         try:
             r = self.game.open(sorted(self._deal_selected))
+            self._deal_selected.clear()
             if not r.get("ok"):
                 self._set_status(r.get("reason", ""))
-                return
-            self._deal_last_opened = list(r.get("opened", []))
-            self._deal_selected.clear()
-            if r.get("offer") is not None:
-                opened_text = "；".join(f"{case}号箱 ¥{value}" for case, value in self._deal_last_opened)
-                self._set_status(
-                    f"开启：{opened_text}\n银行报价：¥{r['offer']}"
-                    if self.lang == "zh" else
-                    f"Opened: {opened_text}\nOffer: ¥{r['offer']}"
-                )
             else:
-                self._set_status(self._result_text(r.get("result", "continue")))
+                self._set_status(
+                    (f"报价：¥{r['offer']}" if r.get("offer") is not None and self.lang == "zh"
+                     else f"Offer: ¥{r['offer']}" if r.get("offer") is not None
+                     else self._result_text(r.get("result", "continue"))))
         except Exception as e:
             self._set_status(str(e))
         self._render_current_game()
@@ -2423,14 +2361,14 @@ class DesktopPet(QWidget):
         if os.path.isfile(laugh_long_path):
             self.spam_laugh_long_sound.setSource(QUrl.fromLocalFile(laugh_long_path))
 
-        # ---------- 新SPAMTON：仅 pet1 / pet2，0.5 秒切换 ----------
+        # ---------- SPT 动画：待机 pet3~pet10；说话/提醒 pet1~pet2 ----------
         self.pet_form = "classic"
-        self._happy_transition_active = False
-        self.legacy_pet_frames = []
-        self.legacy_pet_happy = QPixmap()
+        self.legacy_pet_frames = []          # 说话/提醒：pet1~pet2
+        self.idle_pet_frames = []            # 待机：pet3~pet10
         self.legacy_frame_index = 0
         self.legacy_bounce_time = 0.0
         self._form_switch_timer = None
+
         for filename in ("pet1.png", "pet2.png"):
             pm = QPixmap(resource_path(filename))
             if not pm.isNull():
@@ -2438,9 +2376,18 @@ class DesktopPet(QWidget):
                     int(pm.width() * self.scale), int(pm.height() * self.scale),
                     Qt.KeepAspectRatio, Qt.SmoothTransformation
                 ))
-        if not self.legacy_pet_frames:
-            raise FileNotFoundError("未找到 pet1.png / pet2.png")
-        self.legacy_pet_happy = self.legacy_pet_frames[0]
+        if len(self.legacy_pet_frames) < 2:
+            raise FileNotFoundError("未找到完整的 pet1.png / pet2.png")
+
+        for i in range(3, 11):
+            pm = QPixmap(resource_path(f"pet{i}.png"))
+            if not pm.isNull():
+                self.idle_pet_frames.append(pm.scaled(
+                    int(pm.width() * self.scale), int(pm.height() * self.scale),
+                    Qt.KeepAspectRatio, Qt.SmoothTransformation
+                ))
+        if not self.idle_pet_frames:
+            raise FileNotFoundError("未找到 pet3.png ~ pet10.png")
 
         # 初始化对话队列
         self.dialog_queue = []
@@ -2508,16 +2455,16 @@ class DesktopPet(QWidget):
         self.available_outfits = [1]
         self.current_outfit = 1
         self.outfit_count = 1
-        self.pet_closed_frames = list(self.legacy_pet_frames)
+        # 待机始终使用 pet3~pet10；说话/提醒单独使用 pet1~pet2。
+        self.pet_closed_frames = list(self.idle_pet_frames)
         self.pet_open_frames = list(self.legacy_pet_frames)
-        self.pet_frames = list(self.legacy_pet_frames)
+        self.pet_frames = list(self.idle_pet_frames)
         self.pet_static = self.pet_frames[0]
-        self.pet_talking = self.pet_frames[1] if len(self.pet_frames) > 1 else self.pet_static
-        self.pet_happy = self.pet_static
+        self.pet_talking = self.legacy_pet_frames[0]
         self.current_frame_index = 0
         self._talking_one_shot = False
         self.current_pixmap = self.pet_static
-        self.save_animation_interval = 500
+        self.save_animation_interval = 200
         self._idle_last_tick = time.monotonic()
 
         self.black_screen_timer = QTimer(self)
@@ -2593,8 +2540,6 @@ class DesktopPet(QWidget):
         self.animation_paused = False
         self.auto_dialog_enabled = True
 
-        self.startup_frames = [self.pet_happy] + self.pet_frames if self.pet_frames else [self.pet_happy]
-        self._happy_transition_active = True
         self.startup_index = 0
         self.startup_timer = QTimer(self)
         self.startup_timer.timeout.connect(self._startup_animation)
@@ -2640,10 +2585,7 @@ class DesktopPet(QWidget):
 
         self.add_dialog(random.choice(get_dialogues(self.lang, 'start')))
 
-        # 启动时必须先强制显示文件夹中的 pet1.png 1 秒。
-        # 不能依赖 startup_frames = [happy] + pet_frames，
-        # 因为初始化过程中前面的 pet_static / 对话 / 黑屏逻辑可能覆盖首帧。
-        self._start_happy_transition()
+        # 开机对话由公共对话队列处理，并统一播放 pet1~pet2。
 
     def _load_control_settings(self):
         """Load persistent control/reminder settings."""
@@ -2760,8 +2702,6 @@ class DesktopPet(QWidget):
         """Keep the legacy idle timer. If spt_idle.png exists, it is shown after 15 minutes."""
         if not hasattr(self, 'black_screen_timer'):
             return
-        if getattr(self, '_happy_transition_active', False):
-            return
         if (self.is_displaying or self.tomato_display_active or
                 self._mouth_animation_active or self._black_screen_active or self.is_dragging):
             return
@@ -2773,11 +2713,6 @@ class DesktopPet(QWidget):
 
     def _show_black_screen(self):
         """Show optional external idle image instead of the old black-screen layer."""
-        if getattr(self, '_happy_transition_active', False):
-            return
-        if (self.is_displaying or self.tomato_display_active or
-                self._mouth_animation_active or self._black_screen_active or self.is_dragging):
-            return
         idle_path = resource_path('spt_idle.png')
         if not os.path.isfile(idle_path):
             self._black_screen_remaining_ms = self._black_screen_idle_total_ms
@@ -2830,7 +2765,7 @@ class DesktopPet(QWidget):
             return
         self.black_screen_timer.stop()
         self._black_screen_timer_started_at = None
-        if (getattr(self, '_happy_transition_active', False) or self.is_displaying or
+        if (self.is_displaying or
                 self.tomato_display_active or self._mouth_animation_active or
                 self._black_screen_active or self.is_dragging):
             return
@@ -2845,10 +2780,6 @@ class DesktopPet(QWidget):
         关键修复：角色永远绘制到同一个固定画布，动画只改变画布内部
         的缩放和整个画布的位置，不再改变 QLabel 的宽高。
         """
-        if getattr(self, '_happy_transition_active', False):
-            return
-        if self._black_screen_active:
-            return
         if getattr(self, "_mouth_end_animation", False):
             return
         if self.pet_form == 'classic':
@@ -2989,251 +2920,54 @@ class DesktopPet(QWidget):
         self.label.repaint()
 
     def _start_talking_mouth(self):
-        """开始张嘴动画"""
-        # pet-happy 过渡期间绝对不能被对话嘴部动画覆盖。
-        if getattr(self, '_happy_transition_active', False):
+        """所有说话、提醒、点击、调情及小游戏结果统一播放 pet1~pet2。"""
+        if not self.legacy_pet_frames:
             return
-        if self.pet_form == 'classic':
-            return
-
-        # 黑屏计时与嘴部动画独立，不因说话而重置。
-        if not self.pet_open_frames:
-            return
-
-        # 先完全恢复到闭嘴状态，清理所有残留
+        self.animation_timer.stop()
         self._mouth_end_animation = False
-        self._mouth_animation_active = False
-        self.is_talking_mouth_open = False
-        self._talk_open_one_shot = False
-        self.current_mouth_frame_index = 0
+        self._mouth_animation_active = True
+        self._talk_open_one_shot = True
         self._mouth_phase = 0
-
-        # 停止所有相关定时器
+        self.current_mouth_frame_index = 0
+        self.legacy_frame_index = 0
+        self.current_pixmap = self.legacy_pet_frames[0]
+        self._show_pet_frame_fixed(self.current_pixmap)
         if hasattr(self, "mouth_timer"):
             self.mouth_timer.stop()
-        try:
-            self._stop_timer.stop()
-        except Exception:
-            pass
-        try:
-            self._restore_timer.stop()
-        except Exception:
-            pass
-        self.dialogue_bounce_active = False
-        if hasattr(self, "dialogue_bounce_timer"):
-            self.dialogue_bounce_timer.stop()
-
-        # 先恢复闭嘴帧
-        if self.pet_closed_frames:
-            idx = self.current_frame_index % len(self.pet_closed_frames)
-            pixmap = self.pet_closed_frames[idx]
-            self._set_mouth_frame_centered(pixmap)
-            self.current_pixmap = pixmap
-
-        # 开启嘴部动画锁
-        self._mouth_animation_active = True
-        self._mouth_end_animation = False
-
-        # SPT 的 pet1 / pet2 是固定 0.5 秒循环，不因普通对话暂停。
-
-        # 初始化张嘴状态
-        self._talk_open_one_shot = True
-        self.is_talking_mouth_open = True
-        self.current_mouth_frame_index = 0
-        self._mouth_phase = 1
-
-        # 立即显示 open[0]
-        if self.pet_open_frames:
-            pixmap = self.pet_open_frames[0]
-            self._set_mouth_frame_centered(pixmap)
-            self.current_pixmap = pixmap
-
-        # 对话弹跳
+            self.mouth_timer.start(300)
         self._start_dialogue_bounce()
 
-        # SPT pet1 / pet2 使用固定 0.5 秒切换，语音与逐字显示独立同步。
-
     def _toggle_talking_mouth(self):
-        """对话过程中闭嘴 ↔ 张嘴"""
-
-        if self.pet_form == 'classic':
-            return
+        """说话期间 pet1 与 pet2 以 0.3 秒切换。"""
         if not getattr(self, "_mouth_animation_active", False):
-            if hasattr(self, "mouth_timer"):
-                self.mouth_timer.stop()
             return
-
         if getattr(self, "_mouth_end_animation", False):
-            if hasattr(self, "mouth_timer"):
-                self.mouth_timer.stop()
             return
-
-        if not getattr(self, "_talk_open_one_shot", False):
-            if hasattr(self, "mouth_timer"):
-                self.mouth_timer.stop()
+        if len(self.legacy_pet_frames) < 2:
             return
-
-        if not self.pet_open_frames:
-            self._restore_normal_frame()
-            return
-
-        if self._mouth_phase == 0:
-            # 闭嘴 -> 张嘴
-            self._mouth_phase = 1
-            self.is_talking_mouth_open = True
-            self.current_mouth_frame_index = 0
-            pixmap = self.pet_open_frames[0]
-            self._set_mouth_frame_centered(pixmap)
-            self.current_pixmap = pixmap
-        else:
-            # 张嘴 -> 闭嘴
-            self._mouth_phase = 0
-            self.is_talking_mouth_open = False
-            if self.pet_closed_frames:
-                idx = self.current_frame_index % len(self.pet_closed_frames)
-                pixmap = self.pet_closed_frames[idx]
-                self._set_mouth_frame_centered(pixmap)
-                self.current_pixmap = pixmap
-            else:
-                self._set_mouth_frame_centered(self.pet_static)
-                self.current_pixmap = self.pet_static
-
+        self.legacy_frame_index = (self.legacy_frame_index + 1) % 2
+        self.current_pixmap = self.legacy_pet_frames[self.legacy_frame_index]
+        self._show_pet_frame_fixed(self.current_pixmap)
         if hasattr(self, "mouth_timer"):
-            self.mouth_timer.start(100)
+            self.mouth_timer.start(300)
 
     def _stop_talking_mouth(self):
-        """对话结束，进入结束嘴部动画。经典pet1~pet9形态不使用SPT嘴部帧。"""
+        """对话结束，进入结束嘴部动画。说话结束后恢复 pet3~pet10 待机动画。"""
 
         if self.pet_form == 'classic':
             if hasattr(self, "mouth_timer"):
                 self.mouth_timer.stop()
             self._mouth_animation_active = False
             self._mouth_end_animation = False
-            self.is_talking_mouth_open = False
+            self._talk_open_one_shot = False
             self._mouth_phase = 0
-            if self.legacy_pet_frames:
-                idx = self.legacy_frame_index % len(self.legacy_pet_frames)
-                self.current_pixmap = self.legacy_pet_frames[idx]
+            self.current_frame_index = 0
+            if self.pet_frames:
+                self.current_pixmap = self.pet_frames[0]
                 self._show_pet_frame_fixed(self.current_pixmap)
-            # SPT 只有 pet1 / pet2 两帧；对话结束后恢复正常 0.5 秒切换。
             if getattr(self, "animation_timer_started", False) and not getattr(self, "animation_paused", False):
-                self.animation_timer.start(500)
+                self.animation_timer.start(200)
             return
-
-        if hasattr(self, "mouth_timer"):
-            self.mouth_timer.stop()
-
-        self._talk_open_one_shot = False
-        self.is_talking_mouth_open = False
-        self._mouth_phase = 0
-
-        self._mouth_animation_active = True
-        self._mouth_end_animation = True
-
-        try:
-            self._stop_timer.stop()
-        except Exception:
-            pass
-
-        try:
-            self._restore_timer.stop()
-        except Exception:
-            pass
-
-        if hasattr(self, "animation_timer"):
-            self.animation_timer.stop()
-
-        if len(self.pet_open_frames) < 2:
-            self._restore_normal_frame()
-            return
-
-        self.current_mouth_frame_index = 1
-        pixmap = self.pet_open_frames[1]
-        self._set_mouth_frame_centered(pixmap)
-        self.current_pixmap = pixmap
-
-        self._stop_timer = QTimer(self)
-        self._stop_timer.setSingleShot(True)
-        self._stop_timer.timeout.connect(self._play_second_mouth_frame)
-        self._stop_timer.start(500)
-
-    def _play_second_mouth_frame(self):
-        """第二阶段：open[2] -> 0.5秒 -> 恢复闭嘴"""
-
-        if not getattr(self, "_mouth_end_animation", False):
-            return
-
-        if len(self.pet_open_frames) < 3:
-            self._restore_normal_frame()
-            return
-
-        # 先停止旧的恢复定时器
-        try:
-            self._restore_timer.stop()
-        except Exception:
-            pass
-
-        self.current_mouth_frame_index = 2
-        pixmap = self.pet_open_frames[2]
-        # 直接设置图片
-        self._set_mouth_frame_centered(pixmap)
-        self.current_pixmap = pixmap
-
-        # 创建新的恢复定时器
-        self._restore_timer = QTimer(self)
-        self._restore_timer.setSingleShot(True)
-        self._restore_timer.timeout.connect(self._restore_normal_frame)
-        self._restore_timer.start(500)
-
-    def _restore_normal_frame(self):
-        """恢复普通闭嘴动画"""
-
-        # 先重置所有状态
-        self._mouth_end_animation = False
-        self._mouth_animation_active = False
-        self.is_talking_mouth_open = False
-        self._talk_open_one_shot = False
-        self.current_mouth_frame_index = 0
-        self._mouth_phase = 0
-
-        # 停止所有定时器
-        if hasattr(self, "mouth_timer"):
-            self.mouth_timer.stop()
-        try:
-            self._stop_timer.stop()
-        except Exception:
-            pass
-        try:
-            self._restore_timer.stop()
-        except Exception:
-            pass
-
-        self.dialogue_bounce_active = False
-        if hasattr(self, "dialogue_bounce_timer"):
-            self.dialogue_bounce_timer.stop()
-
-        # 如果黑屏正在显示，不要覆盖它
-        if not self._black_screen_active:
-            # 恢复到闭嘴帧
-            if self.pet_closed_frames:
-                idx = self.current_frame_index % len(self.pet_closed_frames)
-                pixmap = self.pet_closed_frames[idx]
-                self._set_mouth_frame_centered(pixmap)
-                self.current_pixmap = pixmap
-            else:
-                self._set_mouth_frame_centered(self.pet_static)
-                self.current_pixmap = self.pet_static
-
-        self.label.setWindowOpacity(1.0)
-
-        # 恢复普通动画
-        if (hasattr(self, "animation_timer") and
-            getattr(self, "animation_timer_started", False) and
-            not getattr(self, "animation_paused", False)):
-            self.animation_timer.start(getattr(self, "save_animation_interval", 300))
-
-        # 重新启动黑屏计时器
-        self._start_black_screen_timer()
 
     # ==================== 原有方法 ====================
     def switch_language(self):
@@ -3345,141 +3079,54 @@ class DesktopPet(QWidget):
         self.tray_icon.activated.connect(self._on_tray_activated)
         self.tray_icon.show()
 
-    def _get_form_happy_pixmap(self):
-        return self.legacy_pet_frames[0] if self.legacy_pet_frames else QPixmap()
-
-    def _start_happy_transition(self):
-        """显示 pet-happy 1 秒，期间禁止黑屏和闲置动画覆盖。"""
-        happy = self._get_form_happy_pixmap()
-        if happy is None or happy.isNull():
-            return
-        self._happy_transition_active = True
-        if hasattr(self, 'black_screen_timer'):
-            self.black_screen_timer.stop()
-        if hasattr(self, 'black_screen_hide_timer'):
-            self.black_screen_hide_timer.stop()
-        self._black_screen_active = False
-        if hasattr(self, 'animation_timer'):
-            self.animation_timer.stop()
-        # 过渡期间禁止嘴巴动画和对话弹跳抢占 pet1.png。
-        if hasattr(self, 'mouth_timer'):
-            self.mouth_timer.stop()
-        self._mouth_animation_active = False
-        self._mouth_end_animation = False
-        if hasattr(self, 'dialogue_bounce_timer'):
-            self.dialogue_bounce_timer.stop()
-        self.dialogue_bounce_active = False
-        self.animation_timer_started = False
-        self.startup_timer.stop()
-        self.startup_frames = [happy]
-        self.startup_index = 0
-        # 立即绘制并置顶，确保 1 秒 happy 真正可见。
-        self.current_pixmap = happy
-        self._show_pet_frame_fixed(happy)
-        self.label.raise_()
-        self.show()
-        self.raise_()
-        self.startup_timer.start(1000)
-
-    def _toggle_visibility_from_menu(self):
-        if self.isVisible():
-            # 隐藏前也先显示文件夹中的 pet-happy 1 秒。
-            if hasattr(self, 'black_screen_timer'):
-                self.black_screen_timer.stop()
-            if hasattr(self, 'black_screen_hide_timer'):
-                self.black_screen_hide_timer.stop()
-            self._black_screen_active = False
-            self._start_happy_transition()
-            self.toggle_visibility_action.setText("显示SPAMTON" if self.lang == 'zh' else "Show Pet")
-            QTimer.singleShot(1000, self._hide_after_happy)
-        else:
-            self.show()
-            self.raise_()
-            self._start_happy_transition()
-            self.toggle_visibility_action.setText("隐藏SPAMTON" if self.lang == 'zh' else "Hide Pet")
-
-    def _hide_after_happy(self):
-        if self._happy_transition_active:
-            self._happy_transition_active = False
-        self.hide()
-
-    def _toggle_auto_dialog(self):
-        self.auto_dialog_enabled = not self.auto_dialog_enabled
-        if self.auto_dialog_enabled:
-            self.toggle_auto_dialog_action.setText("暂停自动对话" if self.lang == 'zh' else "Pause Auto Dialog")
-            self.random_timer.start(30 * 60 * 1000)
-            msg = "就这么喜欢看着我对你碎碎念？你的脑子是不是有什么问题，还非得听到有人跟你说话才能动一动？" if self.lang == 'zh' else "Do you enjoy my nagging that much? Is your brain broken that you need someone to talk to you to get moving?"
-            self.add_dialog(msg)
-        else:
-            self.toggle_auto_dialog_action.setText("开始自动对话" if self.lang == 'zh' else "Start Auto Dialog")
-            self.random_timer.stop()
-            msg = "也挺好的，至少我能安静会儿，你也能安静会儿……怎么，你很喜欢听到我念叨你？" if self.lang == 'zh' else "Good, at least I can have some peace, and you too... Wait, do you actually like my nagging?"
-            self.add_dialog(msg)
-
     def _toggle_visibility(self):
         if self.isVisible():
-            if hasattr(self, 'black_screen_timer'):
-                self.black_screen_timer.stop()
-            if hasattr(self, 'black_screen_hide_timer'):
-                self.black_screen_hide_timer.stop()
-            self._black_screen_active = False
-            self._start_happy_transition()
-            QTimer.singleShot(1000, self._hide_after_happy)
+            self.hide()
         else:
             self.show()
             self.raise_()
-            self._start_happy_transition()
+            self.activateWindow()
+        if hasattr(self, "toggle_visibility_action"):
+            self.toggle_visibility_action.setText("隐藏SPAMTON" if self.isVisible() and self.lang == "zh" else "Hide Pet" if self.isVisible() else "显示SPAMTON" if self.lang == "zh" else "Show Pet")
+
+    def _toggle_visibility_from_menu(self):
+        self._toggle_visibility()
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.DoubleClick:
             self._toggle_visibility()
 
-    def closeEvent(self, event):
-        event.ignore()
-        self.hide()
-        if hasattr(self, 'tray_icon'):
-            self.tray_icon.showMessage("SPAMTON" if self.lang == 'zh' else "Desk Pet",
-                                       "程序已最小化到系统托盘" if self.lang == 'zh' else "Program minimized to system tray",
-                                       QSystemTrayIcon.Information, 2000)
+    def _toggle_auto_dialog(self):
+        self.auto_dialog_enabled = not self.auto_dialog_enabled
+        if self.auto_dialog_enabled:
+            self.random_timer.start(30 * 60 * 1000)
+        else:
+            self.random_timer.stop()
+        self._update_menu_language()
 
     def _startup_animation(self):
-        # happy 已经在启动/打开/切换时立即显示；1000ms 后才进入正常动画。
+        """开机进入正常待机动画；开机对话由对话系统统一触发 pet1~pet2。"""
         self.startup_timer.stop()
-        self._happy_transition_active = False
-        self.startup_index = 0
-        if self.pet_form == 'classic':
-            self.current_frame_index = 0
-            if self.legacy_pet_frames:
-                self.current_pixmap = self.legacy_pet_frames[0]
-                self._show_pet_frame_fixed(self.legacy_pet_frames[0])
-            self.animation_timer.start(500)
-        else:
-            self.current_frame_index = 0
-            if self.pet_frames:
-                self.current_pixmap = self.pet_frames[0]
-                self._show_pet_frame_fixed(self.pet_frames[0])
-            self.animation_timer.start(getattr(self, 'save_animation_interval', 300))
+        self.current_frame_index = 0
+        if self.pet_frames:
+            self.current_pixmap = self.pet_frames[0]
+            self._show_pet_frame_fixed(self.current_pixmap)
+        self.animation_timer.start(200)
         self.animation_timer_started = True
 
     def _toggle_animation(self):
-        # SPT 完整动画不提供暂停按钮；仅普通 pet1~9 形态可暂停。
+        # 待机动画可暂停；暂停时保持当前待机帧。
         if getattr(self, 'pet_form', 'spt') != 'classic':
             return
         self.animation_paused = not self.animation_paused
         if self.animation_paused:
             self.animation_timer.stop()
-            happy_or_static = self.pet_static
-            if self.pet_form == 'classic' and self.legacy_pet_frames:
-                happy_or_static = self.legacy_pet_frames[0]
-            self._show_pet_frame_fixed(happy_or_static)
+            self._show_pet_frame_fixed(self.pet_static)
             self.toggle_animation_action.setText("开始动画" if self.lang == 'zh' else "Start Animation")
         else:
-            self.animation_timer.start(500)
+            self.animation_timer.start(200)
             self.current_frame_index = 0
-            if self.pet_form == 'classic':
-                self.current_pixmap = self.legacy_pet_frames[0] if self.legacy_pet_frames else self.legacy_pet_happy
-            else:
-                self.current_pixmap = self.pet_frames[0] if self.pet_frames else QPixmap()
+            self.current_pixmap = self.pet_frames[0] if self.pet_frames else QPixmap()
             self._show_pet_frame_fixed(self.current_pixmap)
             self.toggle_animation_action.setText("暂停动画" if self.lang == 'zh' else "Pause Animation")
 
@@ -3492,17 +3139,11 @@ class DesktopPet(QWidget):
             return
 
         if self.pet_form == 'classic':
-            if not self.legacy_pet_frames:
+            if not self.pet_frames:
                 return
-            self.legacy_frame_index = (self.legacy_frame_index + 1) % len(self.legacy_pet_frames)
-            self.current_frame_index = self.legacy_frame_index
-            self.current_pixmap = self.legacy_pet_frames[self.legacy_frame_index]
-            # SPAMTON1（Classic）切帧后立即重绘，确保 pet1~pet9 动画正常播放。
-            # 位置、气泡跟随和缩放仍由统一的固定画布处理。
-            if not self._happy_transition_active:
-                self._show_pet_frame_fixed(
-                    self.current_pixmap
-                )
+            self.current_frame_index = (self.current_frame_index + 1) % len(self.pet_frames)
+            self.current_pixmap = self.pet_frames[self.current_frame_index]
+            self._show_pet_frame_fixed(self.current_pixmap)
             return
 
         if not self.pet_frames:
@@ -3558,42 +3199,49 @@ class DesktopPet(QWidget):
         return f"{m:02d}:{s:02d}"
 
     def _rescale_classic_pet(self):
-        """按当前 pet_zoom 重新缩放普通SPAMTON资源。"""
         zoom = float(getattr(self, "pet_zoom", 1.0))
-        frames = []
-        for i in range(1, 10):
-            pm = QPixmap(resource_path(f"pet{i}.png"))
-            if not pm.isNull():
-                frames.append(pm.scaled(
-                    max(1, int(round(pm.width() * self.scale * zoom))),
-                    max(1, int(round(pm.height() * self.scale * zoom))),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation
-                ))
-        if not frames:
-            fallback = QPixmap(resource_path("pet1.png"))
-            if not fallback.isNull():
-                frames = [fallback.scaled(
-                    max(1, int(round(fallback.width() * self.scale * zoom))),
-                    max(1, int(round(fallback.height() * self.scale * zoom))),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation
-                )]
-        happy = QPixmap(resource_path("pet1.png"))
-        if not happy.isNull():
-            self.legacy_pet_happy = happy.scaled(
-                max(1, int(round(happy.width() * self.scale * zoom))),
-                max(1, int(round(happy.height() * self.scale * zoom))),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            )
-        if frames:
-            self.legacy_pet_frames = frames
-            self.legacy_frame_index %= len(frames)
-            self.current_pixmap = frames[self.legacy_frame_index]
+
+        def scale_frames(filenames):
+            result = []
+            for filename in filenames:
+                pm = QPixmap(resource_path(filename))
+                if not pm.isNull():
+                    result.append(pm.scaled(
+                        max(1, int(round(pm.width() * self.scale * zoom))),
+                        max(1, int(round(pm.height() * self.scale * zoom))),
+                        Qt.KeepAspectRatio, Qt.SmoothTransformation
+                    ))
+            return result
+
+        idle_index = getattr(self, "current_frame_index", 0)
+        mouth_index = getattr(self, "current_mouth_frame_index", 0)
+        legacy_index = getattr(self, "legacy_frame_index", 0)
+
+        idle_frames = scale_frames([f"pet{i}.png" for i in range(3, 11)])
+        talk_frames = scale_frames(["pet1.png", "pet2.png"])
+
+        if idle_frames:
+            self.idle_pet_frames = idle_frames
+            self.pet_closed_frames = list(idle_frames)
+            self.pet_frames = list(idle_frames)
+            self.current_frame_index = idle_index % len(idle_frames)
+        if talk_frames:
+            self.legacy_pet_frames = talk_frames
+            self.pet_open_frames = list(talk_frames)
+            self.current_mouth_frame_index = mouth_index % len(talk_frames)
+            self.legacy_frame_index = legacy_index % len(talk_frames)
+
+        if self.is_talking_mouth_open and self.pet_open_frames:
+            self.current_pixmap = self.pet_open_frames[self.current_mouth_frame_index]
+        elif self.pet_closed_frames:
+            self.current_pixmap = self.pet_closed_frames[self.current_frame_index]
+        elif self.legacy_pet_frames:
+            self.current_pixmap = self.legacy_pet_frames[self.legacy_frame_index]
+        self.pet_static = self.current_pixmap
+        self.pet_talking = self.legacy_pet_frames[0] if self.legacy_pet_frames else self.pet_static
+
 
     def _set_pet_zoom(self, zoom):
-        """改变SPAMTON显示倍率，保持SPAMTON中心位置不变。"""
         zoom = max(
             float(getattr(self, "pet_zoom_min", 0.5)),
             min(float(getattr(self, "pet_zoom_max", 2.0)), float(zoom))
@@ -3602,48 +3250,19 @@ class DesktopPet(QWidget):
         if abs(zoom - old_zoom) < 0.0001:
             return
 
-        old_frame_index = getattr(self, "current_frame_index", 0)
-        old_mouth_index = getattr(self, "current_mouth_frame_index", 0)
-        old_legacy_index = getattr(self, "legacy_frame_index", 0)
-        was_talking = bool(getattr(self, "is_talking_mouth_open", False))
         self.pet_zoom = zoom
+        self._rescale_classic_pet()
 
-        if getattr(self, "pet_form", "spt") == "classic":
-            self._rescale_classic_pet()
-            if self.legacy_pet_frames:
-                self.current_pixmap = self.legacy_pet_frames[
-                    old_legacy_index % len(self.legacy_pet_frames)
-                ]
-        else:
-            current_outfit = getattr(self, "current_outfit", None)
-            if current_outfit is not None:
-                self._load_current_outfit(current_outfit)
-                if self.pet_closed_frames:
-                    self.current_frame_index = old_frame_index % len(self.pet_closed_frames)
-                if self.pet_open_frames:
-                    self.current_mouth_frame_index = old_mouth_index % len(self.pet_open_frames)
-
-        if self.pet_form == "classic":
-            self._show_pet_frame_fixed(self.current_pixmap)
-        elif was_talking and self.pet_open_frames:
-            self.is_talking_mouth_open = True
+        if self.is_talking_mouth_open and self.pet_open_frames:
             self._show_pet_frame_fixed(
-                self.pet_open_frames[
-                    self.current_mouth_frame_index % len(self.pet_open_frames)
-                ]
+                self.pet_open_frames[self.current_mouth_frame_index % len(self.pet_open_frames)]
             )
         elif self.pet_closed_frames:
-            self.is_talking_mouth_open = False
             self._show_pet_frame_fixed(
-                self.pet_closed_frames[
-                    self.current_frame_index % len(self.pet_closed_frames)
-                ]
+                self.pet_closed_frames[self.current_frame_index % len(self.pet_closed_frames)]
             )
         else:
             self._show_pet_frame_fixed(self.pet_static)
-
-        # 如果缩放SPAMTON时正处于黑屏状态，黑屏覆盖层也必须按照新的
-        # SPAMTON倍率重新合成，否则黑屏会继续停留在缩放前的位置和尺寸。
 
 
     def eventFilter(self, obj, event):
@@ -3675,7 +3294,7 @@ class DesktopPet(QWidget):
         if event.button() == Qt.LeftButton:
             self.drag_pos = event.globalPos() - self.frameGeometry().topLeft()
             self.is_dragging = False
-            self._show_pet_frame_fixed(self.legacy_pet_happy if self.pet_form == 'classic' and not self.legacy_pet_happy.isNull() else self.pet_happy)
+            self._show_pet_frame_fixed(self.pet_static)
             if self.animation_timer_started:
                 self.animation_timer.stop()
         elif event.button() == Qt.RightButton:
@@ -3720,7 +3339,7 @@ class DesktopPet(QWidget):
             else:
                 self._show_pet_frame_fixed(self.pet_frames[0] if self.pet_frames else QPixmap())
             if not self.animation_paused and self.animation_timer_started:
-                self.animation_timer.start(500)
+                self.animation_timer.start(200)
             if not self.is_dragging:
                 # event 可能来自SPAMTON QLabel 的 eventFilter，此时 event.pos() 是
                 # QLabel 坐标；统一转换成 DesktopPet 主窗口坐标再判断点击区域。
@@ -4322,20 +3941,16 @@ class DesktopPet(QWidget):
         self._close_timer.start(5000)
 
     def _prepare_close(self):
-        # 关闭时彻底关闭黑屏，并统一显示文件夹中的 pet1.png 1 秒。
+        # 关闭前播放 1 秒 pet1~pet2 说话动画。
         if hasattr(self, 'black_screen_timer'):
             self.black_screen_timer.stop()
         if hasattr(self, 'black_screen_hide_timer'):
             self.black_screen_hide_timer.stop()
         self._black_screen_active = False
-        self._happy_transition_active = True
-        happy = self._get_form_happy_pixmap()
-        if happy is not None and not happy.isNull():
-            self.current_pixmap = happy
-            self._show_pet_frame_fixed(happy)
-            self.label.raise_()
-            self.show()
-            self.raise_()
+        self._start_talking_mouth()
+        self.label.raise_()
+        self.show()
+        self.raise_()
         self.animation_timer.stop()
         self.startup_timer.stop()
         self.clear_dialog_timer()
@@ -4343,26 +3958,10 @@ class DesktopPet(QWidget):
             self.note_repeat_timer.stop()
         QTimer.singleShot(1000, self._really_quit)
 
-    def _really_quit(self):
-        if self.control_panel:
-            self.control_panel.close()
-        if self.product_window:
-            self.product_window.close()
-        if self.note_window:
-            self.note_window.close()
-        if self.games_window:
-            self.games_window.close()
-        if hasattr(self, "note_repeat_timer"):
-            self.note_repeat_timer.stop()
-        self.close()
-        QApplication.quit()
-
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     pet = DesktopPet()
     pet.show()
-    # 程序首次启动：先显示 pet1.png 1 秒。
-    QTimer.singleShot(0, pet._start_happy_transition)
     sys.exit(app.exec_())

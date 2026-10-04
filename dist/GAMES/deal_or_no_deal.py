@@ -55,10 +55,11 @@ class DealOrNoDeal:
         opened=[(n,self.values[n]) for n in nums]
 
         if len(self.opened) >= 24:
-            self.offer=None
-            final=self._finish_preview()
-            final['opened']=opened
-            return final
+            # 最后一个普通箱子打开后，仍然必须先进入一次庄家报价。
+            # 此时只剩玩家最初选择的最终箱子，因此报价直接基于该箱子。
+            self.offer=self._offer()
+            return {'ok':True,'opened':opened,'offer':self.offer,
+                    'remaining':self.remaining(),'endgame':True}
 
         self.round += 1
         self.offer=self._offer()
@@ -75,19 +76,21 @@ class DealOrNoDeal:
         if deal:
             self.over=True; self.result=self.offer; return {'ok':True,'result':'deal','value':self.offer}
         self.offer=None
-        if len(self.remaining())<=1:
-            return {'ok':True,'result':'final_choice','remaining':self.remaining(),'player_case':self.player_case}
-        return {'ok':True,'result':'nodeal','next_open':self.ROUNDS[min(self.round,len(self.ROUNDS)-1)]}
+        if len(self.remaining()) == 0:
+            return {'ok':True,'result':'final_choice','remaining':[],'player_case':self.player_case}
+        return {'ok':True,'result':'nodeal','next_open':1,'remaining':self.remaining()}
     def swap_or_reveal(self, swap=None):
         if self.player_case is None:
             return {'ok':False,'reason':'请先选择你的最终箱子'}
         if self.player_case is None:
             return {'ok':False,'reason':'请先选择你的最终箱子'}
         left=self.remaining()
-        if len(left)==1:
-            other=left[0]
-            if swap is True: self.player_case=other
-            val=self.values[self.player_case]; self.over=True; self.result=val
+        if len(left) <= 1:
+            if len(left) == 1 and swap is True:
+                self.player_case = left[0]
+            val = self.values[self.player_case]
+            self.over = True
+            self.result = val
             return {'ok':True,'result':'final','value':val,'player_case':self.player_case}
         return {'ok':True,'result':'continue','remaining':left}
     def status(self):
