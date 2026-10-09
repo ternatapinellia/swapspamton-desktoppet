@@ -28,7 +28,7 @@
 
 ## Download
 
-[Download DeskPet V1.2](https://github.com/ternatapinellia/swapspamton-desktoppet/releases/tag/v1.2)
+[Download DeskPet V2.0](https://github.com/ternatapinellia/swapspamton-desktoppet/releases/tag/v2.0)
 
 ## Notes
 
