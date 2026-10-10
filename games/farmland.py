@@ -450,9 +450,22 @@ class FarmGame:
         self.host=host
         self._widgets=[]
         top=QHBoxLayout();
+        # 等级/天气/田地信息会随着天地增多而变长（最多 30 块），
+        # 直接放在固定高度的面板里会被裁掉且无法滚动，
+        # 所以放进一个可滚动区。
         self.summary=QLabel(self.status_text());self.summary.setWordWrap(True)
+        self.summary.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.summary.setStyleSheet("color:#333;font-size:13px;background:transparent;")
-        top.addWidget(self.summary,1)
+        summary_scroll=QScrollArea()
+        summary_scroll.setWidgetResizable(True)
+        summary_scroll.setFrameShape(QScrollArea.NoFrame)
+        summary_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        summary_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        summary_scroll.setStyleSheet("QScrollArea{background:transparent;border:none;} QScrollBar:vertical{width:8px;background:transparent;} QScrollBar::handle:vertical{background:#888;border-radius:4px;}")
+        summary_scroll.setMinimumHeight(72)
+        summary_scroll.setMaximumHeight(120)
+        summary_scroll.setWidget(self.summary)
+        top.addWidget(summary_scroll,1)
         refresh=QPushButton("刷新");refresh.clicked.connect(self._refresh);top.addWidget(refresh)
         layout.addLayout(top)
         self.tabs=QTabWidget();layout.addWidget(self.tabs,1)
@@ -500,7 +513,7 @@ class FarmGame:
         row=QHBoxLayout();box.addLayout(row)
         self.shop_count=QSpinBox();self.shop_count.setRange(1,99);self.shop_count.setValue(1);row.addWidget(self.shop_count)
         row.addWidget(self._button("购买",self._buy));row.addWidget(self._button("出售选中",self._sell_selected))
-        self.tabs.addTab(w,"商店")
+        self.tabs.addTab(self._scroll_tab(w),"商店")
         self._update_shop()
 
     def _build_bag_tab(self):
