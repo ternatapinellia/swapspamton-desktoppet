@@ -1,0 +1,13 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller build output (regenerate with pack.bat)
+build/
+dist/
+
+# Local backups / logs
+*.bak-*
+*.log
+*.tmp
