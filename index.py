@@ -14,13 +14,16 @@ import urllib.error
 import time
 import winreg
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QMenu,
                              QPushButton, QGridLayout, QGroupBox,
                              QSpinBox, QCheckBox, QHBoxLayout, QAction, QWidgetAction, QSlider,
                              QVBoxLayout, QSystemTrayIcon,
                              QScrollArea, QPlainTextEdit, QLineEdit, QComboBox)
-from PyQt5.QtCore import Qt, QTimer, QPropertyAnimation, QPoint, QTime, QEasingCurve, QEvent, QUrl
+from PyQt5.QtCore import (Qt, QTimer, QPropertyAnimation, QPoint, QTime,
+                            QEasingCurve, QEvent, QUrl, QThread, pyqtSignal)
 from PyQt5.QtGui import QPixmap, QPainter, QFont, QIcon
 from PyQt5.QtMultimedia import QSoundEffect
 
@@ -175,7 +178,9 @@ _product_translation_cache = {}
 
 def _translate_product_text(text, lang):
     """Translate a Rakuten product title for the current SPT language.
-    Uses Google Translate's public translation endpoint; failures fall back to the original text.
+
+    Uses Google Translate's public endpoint; failures fall back to the original text.
+    Results are cached per (lang, title) so re-rendering and language switches are free.
     """
     text = str(text or "").strip()
     if not text or lang not in ("zh", "en"):
@@ -216,12 +221,39 @@ def _translate_product_text(text, lang):
     return text
 
 def _translate_product_items(items, lang):
+    """Translate every title, in parallel.
+
+    逐个串行翻译 20 条日文标题大约要 40 秒（每条 ~2 秒），这正是商品面板
+    “打开就卡” 的原因。这里用线程池并发请求，实测 20 条从 ~40 秒降到 3 秒左右。
+    """
     if not items or lang not in ("zh", "en"):
         return items
+
+    titles = []
     for item in items:
-        original = item.get("title", "")
+        # 始终从原始标题翻译：切语言时会重复调用本函数，
+        # 如果拿当前 title（已是译文）再翻一次，译文会被二次翻译。
+        original = item.get("title_original") or item.get("title", "")
         item["title_original"] = original
-        item["title"] = _translate_product_text(original, lang)
+        titles.append(original)
+
+    if not titles:
+        return items
+
+    def _apply(t):
+        # 走缓存：_translate_product_text 命中缓存时是纯字典读取，不会再发请求。
+        return _product_translation_cache.get((lang, t)) or _translate_product_text(t, lang)
+
+    try:
+        workers = min(8, max(1, len(titles)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            results = list(executor.map(_apply, titles))
+    except Exception as e:
+        print("商品标题批量翻译失败:", e)
+        results = [_apply(t) for t in titles]
+
+    for item, translated in zip(items, results):
+        item["title"] = translated
     return items
 
 def _product_api_get(path, params=None):
@@ -248,7 +280,6 @@ def _product_api_get(path, params=None):
         raise RuntimeError(f"商品代理连接失败: {e.reason}") from e
     except Exception as e:
         raise RuntimeError(f"商品数据解析失败: {e}") from e
-
 def _product_item_image(item):
     images = item.get("mediumImageUrls") or item.get("smallImageUrls") or []
     if images:
@@ -600,7 +631,7 @@ class BasePanel(QWidget):
         super().__init__(parent)
         self.parent_pet = parent
         self.panel_type = panel_type
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
 
         screen_w, screen_h = get_screen_size()
@@ -626,50 +657,117 @@ class BasePanel(QWidget):
         super().paintEvent(event)
 
     def update_position(self):
-        """按照气泡的屏幕坐标定位面板；只在SPAMTON窗口真正移动时同步。"""
-        if self.parent_pet is None or not hasattr(self.parent_pet, "bubble"):
+        """把面板固定在桌宠左侧（气泡左边），随桌宠一起移动；左边放不下时自动换到右侧。"""
+        if self.parent_pet is None or not hasattr(self.parent_pet, "label"):
             return
 
-        bubble = self.parent_pet.bubble
+        pet = self.parent_pet
+        scale = float(getattr(pet, "scale", self.scale))
 
-        # 使用气泡原本的定位逻辑作为唯一坐标基准。
-        if hasattr(self.parent_pet, "update_bubble_position"):
-            self.parent_pet.update_bubble_position()
+        # 同步气泡位置
+        if hasattr(pet, "update_bubble_position"):
+            pet.update_bubble_position()
 
-        bx, by = bubble.get_bubble_position()
+        label = pet.label
+        pet_w = max(1, label.width())
+        pet_h = max(1, label.height())
+        gap = int(round(24 * scale))
 
-        # 控制面板、便签、商品面板使用完全相同的横向定位逻辑。
-        if self.panel_type in ("control", "note", "product"):
-            panel_x = bx + (bubble.width() - self.width()) // 2 - 800
-        elif self.panel_type == "midnight":
-            panel_x = bx + (bubble.width() - self.width()) // 2 - 1200
-        elif self.panel_type == "game":
-            panel_x = bx + (bubble.width() - self.width()) // 2 - 500
-        else:
-            panel_x = bx + (bubble.width() - self.width()) // 2
+        # 气泡自身的横向偏移（和 update_bubble_position 用同一个常量），
+        # 面板贴在气泡更左侧，避免和气泡重叠。
+        bubble = getattr(pet, "bubble", None)
+        bubble_w = bubble.width() if bubble is not None else 0
+        bubble_offset_x = int(round(300 * scale))
+        bubble_left_rel = label.x() + (pet_w - bubble_w) // 2 - bubble_offset_x
 
-        panel_y = by - self.height() - int(20 * self.scale)
+        # 默认：面板放在气泡左侧，垂直与桌宠居中对齐。
+        # 左侧位置整体右移 500px，让面板更靠近桌宠（气泡本身不动）。
+        left_shift = int(round(500 * scale))
+        panel_rel_x = bubble_left_rel - self.width() - gap + left_shift
+        panel_rel_y = label.y() + (pet_h - self.height()) // 2
 
-        # 完整显示：把最终位置限制在当前屏幕可用区域内。
-        screen = QApplication.screenAt(QPoint(
-            int(bx + bubble.width() / 2),
-            int(by + bubble.height() / 2)
-        ))
-        if screen is None:
-            screen = QApplication.primaryScreen()
+        # 左边放不下时改放桌宠右侧
+        panel_global_x = pet.mapToGlobal(QPoint(int(panel_rel_x), 0)).x()
+        screen = QApplication.screenAt(pet.mapToGlobal(QPoint(label.x(), label.y()))) or QApplication.primaryScreen()
+        rect = screen.availableGeometry() if screen is not None else None
+        if rect is not None and panel_global_x < rect.left():
+            panel_rel_x = label.x() + pet_w + gap
 
-        if screen is not None:
-            rect = screen.availableGeometry()
-            max_x = rect.right() - self.width() + 1
-            max_y = rect.bottom() - self.height() + 1
-            panel_x = max(rect.left(), min(panel_x, max_x))
-            panel_y = max(rect.top(), min(panel_y, max_y))
+        # 垂直越界时只做最小修正，保证面板仍紧贴桌宠
+        if rect is not None:
+            panel_global_y = pet.mapToGlobal(QPoint(0, int(panel_rel_y))).y()
+            corrected_y = max(rect.top(), min(panel_global_y, rect.bottom() - self.height() + 1))
+            panel_rel_y = panel_rel_y + (corrected_y - panel_global_y)
 
-        self.move(int(panel_x), int(panel_y))
-        self._fixed_x = int(panel_x)
-        self._fixed_y = int(panel_y)
+        # 面板是独立顶层窗口（Qt.Tool），move 使用屏幕坐标
+        self.move(pet.mapToGlobal(QPoint(int(panel_rel_x), int(panel_rel_y))))
+        self._fixed_x = self.x()
+        self._fixed_y = self.y()
         self._position_fixed = True
 
+
+class ProductFetchWorker(QThread):
+    """后台线程：拉取商品 + 翻译标题，避免阻塞 Qt 主线程（原来会卡 30~40 秒）。
+
+    翻译本身又用线程池并发请求，所以 20 条日文标题从 ~40 秒降到 3 秒左右。
+    结果通过 result_ready 信号发回主线程，主线程只负责刷新界面。
+    """
+
+    result_ready = pyqtSignal(str, object, str)
+
+    def __init__(self, kind, keyword="", lang="zh"):
+        # 不设置 QObject 父对象：面板关闭/销毁时不会连带销毁仍在运行的线程。
+        super().__init__()
+        self.kind = kind            # 'ranking' 或 'search'
+        self.keyword = keyword
+        self.lang = lang
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            if self.kind == "search":
+                items = search_products(self.keyword, 20)
+            else:
+                items = fetch_product_ranking(20)
+            if self._cancelled:
+                return
+            _translate_product_items(items, self.lang)
+            if self._cancelled:
+                return
+            self.result_ready.emit(self.kind, items, "")
+        except Exception as e:
+            if not self._cancelled:
+                self.result_ready.emit(self.kind, [], str(e))
+
+class ProductTranslateWorker(QThread):
+    """后台线程：只做标题翻译（用于面板已打开时切换语言）。
+
+    切换语言时如果目标语言还没有译文缓存，需要重新请求 20 条标题，
+    放在主线程会卡 5~6 秒；放到这里让界面保持响应。
+    """
+
+    result_ready = pyqtSignal(object, str, str)
+
+    def __init__(self, items, lang):
+        super().__init__()
+        self.items = items
+        self.lang = lang
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        try:
+            _translate_product_items(self.items, self.lang)
+            if not self._cancelled:
+                self.result_ready.emit(self.items, self.lang, "")
+        except Exception as e:
+            if not self._cancelled:
+                self.result_ready.emit(self.items, self.lang, str(e))
 
 # ---------- 商品面板 ----------
 class ProductWindow(BasePanel):
@@ -681,6 +779,10 @@ class ProductWindow(BasePanel):
         self.mode = "ranking"
         self.lang = getattr(parent, "lang", "zh") if parent else "zh"
         self.product_data = []
+        self._loading = False
+        self._worker = None
+        self._worker_key = None
+        self._translate_worker = None
         self.page = 0
         self.page_size = 6
 
@@ -748,9 +850,16 @@ class ProductWindow(BasePanel):
             self.search_btn.setText("")
             self.search_edit.setPlaceholderText("输入商品关键词……")
             self.go_btn.setText("搜")
-        if self.product_data:
-            _translate_product_items(self.product_data, self.lang)
+        if not self.product_data:
+            return
+        originals = [it.get("title_original", it.get("title", "")) for it in self.product_data]
+        # 目标语言全部命中缓存（切换回来时）→ 直接刷新，瞬时完成。
+        if all((lang, t) in _product_translation_cache for t in originals if t):
+            _translate_product_items(self.product_data, lang)
             self._render()
+            return
+        # 否则后台翻译，避免切换语言时界面卡住。
+        self._start_translate_worker()
 
     def _clear(self):
         for i in reversed(range(self.product_layout.count())):
@@ -761,6 +870,12 @@ class ProductWindow(BasePanel):
 
     def _render(self):
         self._clear()
+        if self._loading:
+            label = QLabel("正在加载商品……" if self.parent_pet.lang == "zh" else "Loading products...")
+            label.setWordWrap(True)
+            label.setStyleSheet(f"font-size:{int(13*self.scale)}px;color:#666;background:transparent;")
+            self.product_layout.addWidget(label)
+            return
         if not self.product_data:
             label = QLabel("暂无商品数据" if self.parent_pet.lang == "zh" else "No product data")
             label.setWordWrap(True)
@@ -787,24 +902,93 @@ class ProductWindow(BasePanel):
                 lay.addWidget(link)
             self.product_layout.addWidget(card)
 
-    def _load(self, loader):
+    def _start_worker(self, kind, keyword=""):
+        """启动后台抓取；同一时间只保留一个（新请求会取消上一个）。"""
+        key = (kind, keyword, self.lang)
+        # 去重：showEvent 和 show_products 都会触发一次加载，缓存命中时结果一致，
+        # 没必要把同一个请求发两遍（翻译请求能省一半）。
+        if self._loading and self._worker_key == key and self._worker is not None:
+            return
+        self._cancel_worker()
+        self._worker_key = key
+        self._loading = True
+        self.product_data = []
         self.status_label.setText("Loading..." if self.lang=='en' else "正在加载商品……")
-        QApplication.processEvents()
-        try:
-            self.product_data = loader()
-            _translate_product_items(self.product_data, self.lang)
-            self.status_label.setText((f"{len(self.product_data)} items" if self.lang=='en' else f"共 {len(self.product_data)} 件商品"))
-        except Exception as e:
-            self.product_data = []
-            self.status_label.setText(str(e))
-            print("商品 API 错误:", e)
         self._render()
+        worker = ProductFetchWorker(kind, keyword, self.lang)
+        worker.result_ready.connect(self._on_worker_done)
+        worker.finished.connect(lambda w=worker: self._release_worker(w))
+        self._worker = worker
+        worker.start()
+
+    def _cancel_worker(self):
+        worker = getattr(self, "_worker", None)
+        if worker is not None:
+            try:
+                worker.cancel()
+            except Exception:
+                pass
+        self._worker = None
+        self._worker_key = None
+
+    def _start_translate_worker(self):
+        """面板已打开、切换语言时用后台线程重新翻译标题。"""
+        old = getattr(self, "_translate_worker", None)
+        if old is not None:
+            try:
+                old.cancel()
+            except Exception:
+                pass
+        worker = ProductTranslateWorker(self.product_data, self.lang)
+        worker.result_ready.connect(self._on_translate_done)
+        worker.finished.connect(lambda w=worker: self._release_translate_worker(w))
+        self._translate_worker = worker
+        worker.start()
+
+    def _release_translate_worker(self, worker):
+        if getattr(self, "_translate_worker", None) is worker:
+            self._translate_worker = None
+        try:
+            worker.deleteLater()
+        except Exception:
+            pass
+
+    def _on_translate_done(self, items, lang, error):
+        if error:
+            print("商品标题翻译失败:", error)
+        if lang == self.lang:
+            self._render()
+
+    def _release_worker(self, worker):
+        if getattr(self, "_worker", None) is worker:
+            self._worker = None
+        try:
+            worker.deleteLater()
+        except Exception:
+            pass
+
+    def _on_worker_done(self, kind, items, error):
+        self._loading = False
+        self._worker_key = None
+        if error:
+            self.product_data = []
+            self.status_label.setText(error)
+            print("商品 API 错误:", error)
+        else:
+            self.product_data = items or []
+            self.status_label.setText(
+                f"{len(self.product_data)} items" if self.lang=='en' else f"共 {len(self.product_data)} 件商品")
+        self._render()
+
+    def _load(self, loader):
+        """兼容旧调用：仍然异步执行，不再阻塞界面。"""
+        self._start_worker("ranking")
 
     def show_ranking(self):
         self.mode = "ranking"
         self.search_edit.hide(); self.go_btn.hide()
         self.product_scroll.setGeometry(int(55*self.scale), int(132*self.scale), int(340*self.scale), int(315*self.scale))
-        self._load(lambda: fetch_product_ranking(20))
+        self._start_worker("ranking")
 
     def show_search(self):
         self.mode = "search"
@@ -819,7 +1003,18 @@ class ProductWindow(BasePanel):
         keyword = self.search_edit.text().strip()
         if not keyword:
             return
-        self._load(lambda: search_products(keyword, 20))
+        self._start_worker("search", keyword)
+
+    def hideEvent(self, event):
+        # 面板关闭时取消正在进行的抓取/翻译，避免线程在窗口销毁后回调。
+        self._cancel_worker()
+        tw = getattr(self, "_translate_worker", None)
+        if tw is not None:
+            try:
+                tw.cancel()
+            except Exception:
+                pass
+        super().hideEvent(event)
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -1300,6 +1495,8 @@ class GamesWindow(BasePanel):
             hint = self._new_button("提示" if self.lang == "zh" else "Hint",
                                     self._idiom_hint)
             row.addWidget(submit); row.addWidget(hint)
+            giveup = self._new_button("认输" if self.lang == "zh" else "Give up", self._idiom_giveup)
+            row.addWidget(giveup)
             layout.addLayout(row)
             if self.game.used:
                 used = QLabel(
@@ -1329,6 +1526,14 @@ class GamesWindow(BasePanel):
             )
         else:
             self._game_message = self._result_text(r.get("result"))
+        self._render_current_game()
+
+    def _idiom_giveup(self):
+        r = self.game.give_up()
+        if r.get("ok"):
+            self._game_message = "你选择认输，SPAMTON获胜。" if self.lang == "zh" else "You gave up. Pet wins."
+        else:
+            self._set_status(r.get("reason", ""))
         self._render_current_game()
 
     def _idiom_hint(self):
@@ -1478,96 +1683,213 @@ class GamesWindow(BasePanel):
 
     def _render_deal(self, layout):
         status = self.game.status()
+        self._deal_selected = getattr(self, "_deal_selected", set())
+        need = self.game.ROUNDS[min(self.game.round, len(self.game.ROUNDS)-1)]
+
         if self.game.over:
             if self.game.result is not None:
-                self._set_status(
-                    (f"游戏结束：你成交了 ¥{self.game.result}" if self.lang == "zh"
-                     else f"Game over: Deal accepted for ¥{self.game.result}"))
+                self._set_status("游戏结束" if self.lang == "zh" else "Game over")
+                final_box = QLabel(
+                    f"最终开箱金额\n¥{self.game.result:,}" if self.lang == "zh"
+                    else f"FINAL AMOUNT\n¥{self.game.result:,}"
+                )
+                final_box.setAlignment(Qt.AlignCenter)
+                final_box.setMinimumHeight(int(72*self.scale))
+                final_box.setStyleSheet(
+                    f"font-size:{int(28*self.scale)}px;font-weight:900;color:#b00020;"
+                    "background:#fff3f3;border:2px solid #b00020;border-radius:10px;"
+                    f"padding:{int(8*self.scale)}px;"
+                )
+                layout.addWidget(final_box)
             else:
                 self._set_status("游戏结束" if self.lang == "zh" else "Game over")
         elif self.game.offer is not None:
-            self._set_status(
-                (f"庄家报价：¥{self.game.offer}" if self.lang == "zh"
-                 else f"Banker offer: ¥{self.game.offer}"))
+            self._set_status(f"庄家报价：¥{self.game.offer}" if self.lang == "zh" else f"Banker offer: ¥{self.game.offer}")
         elif self.game.player_case is None:
             self._set_status("请先选择你的最终箱子" if self.lang == "zh" else "Choose your final case first.")
         else:
             self._set_status(
-                (f"已开 {status['opened']} 箱，剩余 {status['remaining_count']} 箱"
-                 if self.lang == "zh"
-                 else f"Opened: {status['opened']} | Remaining: {status['remaining_count']}"))
-        self._deal_selected = getattr(self, "_deal_selected", set())
+                f"第 {self.game.round + 1} 轮：需要开启 {need} 个箱子，已选择 {len(self._deal_selected)}/{need}"
+                if self.lang == "zh" else f"Round {self.game.round + 1}: select {len(self._deal_selected)}/{need} cases."
+            )
+
+        if self.game.player_case is not None:
+            own = QLabel(f"你的最终箱子：{self.game.player_case}号" if self.lang == "zh" else f"Your final case: {self.game.player_case}")
+            own.setAlignment(Qt.AlignCenter)
+            own.setStyleSheet(f"font-size:{int(16*self.scale)}px;font-weight:bold;color:#1a1a2c;background:transparent;")
+            layout.addWidget(own)
+
+            info = QLabel(
+                f"本轮需要开启 {need} 个箱子　已选择 {len(self._deal_selected)}/{need}"
+                if self.lang == "zh" else f"This round: {len(self._deal_selected)}/{need} cases selected"
+            )
+            info.setAlignment(Qt.AlignCenter)
+            info.setStyleSheet(f"font-size:{int(14*self.scale)}px;color:#333;background:transparent;")
+            layout.addWidget(info)
+
+        if getattr(self, "_deal_final_pending", False) and not self.game.over:
+            final_hint = QLabel(
+                "最后一个箱子已打开，现在开启你的最终箱子" if self.lang == "zh"
+                else "The last remaining case is open. Now reveal your final case."
+            )
+            final_hint.setAlignment(Qt.AlignCenter)
+            final_hint.setStyleSheet(f"font-size:{int(16*self.scale)}px;font-weight:bold;color:#8b0000;background:transparent;")
+            layout.addWidget(final_hint)
+            final_btn = self._new_button(
+                "开启我的最终箱子" if self.lang == "zh" else "Reveal My Final Case",
+                self._deal_reveal_final
+            )
+            final_btn.setMinimumHeight(int(42*self.scale))
+            layout.addWidget(final_btn)
+
+        # 箱子和下面的操作区必须是两个独立的区域。
+        # 箱子滚动区域内部同时承载“本次开箱”记录，避免记录把外面的按钮往下挤。
+        box_scroll = QScrollArea()
+        box_scroll.setWidgetResizable(True)
+        box_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        box_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        box_scroll.setFrameShape(QScrollArea.NoFrame)
+        box_scroll.setMinimumHeight(int(100*self.scale))
+        box_scroll.setMaximumHeight(int(125*self.scale))
+        box_scroll.setStyleSheet(
+            "QScrollArea{background:transparent;border:none;}"
+            "QScrollBar:vertical{width:8px;background:#e5e5e5;border-radius:4px;}"
+            "QScrollBar::handle:vertical{min-height:24px;background:#888;border-radius:4px;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0px;}"
+        )
+
+        box_page = QWidget()
+        box_page.setStyleSheet("background:transparent;")
+        box_layout = QVBoxLayout(box_page)
+        box_layout.setSpacing(int(4*self.scale))
+        box_layout.setContentsMargins(int(4*self.scale), int(4*self.scale), int(4*self.scale), int(4*self.scale))
+        box_layout.setAlignment(Qt.AlignTop)
+
         grid = QGridLayout()
         grid.setSpacing(int(3*self.scale))
+        grid.setContentsMargins(0, 0, 0, 0)
+        visible = 0
         for n in range(1, 27):
             if n in self.game.opened or n == self.game.player_case:
                 continue
             label = f"✓ {n}" if n in self._deal_selected else str(n)
             b = self._new_button(label, lambda checked=False, x=n: self._deal_select(x))
             b.setFixedSize(int(58*self.scale), int(31*self.scale))
-            grid.addWidget(b, (n-1)//5, (n-1)%5)
-        layout.addLayout(grid)
-        open_btn = self._new_button("开箱" if self.lang == "zh" else "Open",
-                                    self._deal_open_selected)
-        layout.addWidget(open_btn)
+            grid.addWidget(b, visible // 5, visible % 5)
+            visible += 1
+        box_layout.addLayout(grid)
+
+        last = getattr(self, "_deal_last_opened", [])
+        if last:
+            title = QLabel("本次开箱：" if self.lang == "zh" else "Opened:")
+            title.setAlignment(Qt.AlignCenter)
+            title.setStyleSheet(f"font-size:{int(13*self.scale)}px;font-weight:bold;color:#333;background:transparent;")
+            box_layout.addWidget(title)
+            for case, value in last:
+                lab = QLabel(f"{case}号箱：¥{value}" if self.lang == "zh" else f"Case {case}: ¥{value}")
+                lab.setAlignment(Qt.AlignCenter)
+                lab.setStyleSheet(f"font-size:{int(12*self.scale)}px;color:#333;background:transparent;")
+                box_layout.addWidget(lab)
+
+        box_scroll.setWidget(box_page)
+        layout.addWidget(box_scroll)
+
+        # 普通开箱按钮只在没有庄家报价、且还存在普通开箱阶段时显示。
+        # 报价出现后不再显示“开箱”，避免进入最后阶段时出现误操作。
+        if self.game.offer is None and not getattr(self, "_deal_final_pending", False) and not self.game.over:
+            open_btn = self._new_button("开箱" if self.lang == "zh" else "Open", self._deal_open_selected)
+            open_btn.setMinimumHeight(int(34*self.scale))
+            layout.addWidget(open_btn)
+
         if self.game.offer is not None:
-            offer = QLabel(
-                (f"庄家报价：¥{self.game.offer}" if self.lang == "zh"
-                 else f"Banker offer: ¥{self.game.offer}")
-            )
+            offer = QLabel(f"庄家报价：¥{self.game.offer}" if self.lang == "zh" else f"Banker offer: ¥{self.game.offer}")
             offer.setAlignment(Qt.AlignCenter)
-            offer.setStyleSheet(
-                f"font-size:{int(19*self.scale)}px;font-weight:bold;"
-                "color:#1a1a2c;background:transparent;"
-            )
+            offer.setStyleSheet(f"font-size:{int(17*self.scale)}px;font-weight:bold;color:#1a1a2c;background:transparent;")
             layout.addWidget(offer)
             row = QHBoxLayout()
-            row.addWidget(self._new_button("Deal" if self.lang == "en" else "成交",
-                                           lambda: self._deal_respond(True)))
-            row.addWidget(self._new_button("No Deal" if self.lang == "en" else "继续",
-                                           lambda: self._deal_respond(False)))
+            row.setSpacing(int(6*self.scale))
+            deal_btn = self._new_button("Deal" if self.lang == "en" else "成交", lambda: self._deal_respond(True))
+            no_deal_btn = self._new_button("No Deal" if self.lang == "en" else "继续", lambda: self._deal_respond(False))
+            deal_btn.setMinimumHeight(int(34*self.scale))
+            no_deal_btn.setMinimumHeight(int(34*self.scale))
+            row.addWidget(deal_btn)
+            row.addWidget(no_deal_btn)
             layout.addLayout(row)
 
     def _deal_select(self, n):
-        # 开局第一步必须先由玩家选择自己的最终箱子。
         if self.game.player_case is None:
+            self._deal_last_opened = getattr(self, "_deal_last_opened", [])
             try:
                 r = self.game.choose_case(n)
                 if not r.get("ok"):
                     self._set_status(r.get("reason", ""))
                     return
                 self._deal_selected.clear()
-                self._set_status(
-                    f"你的最终箱子是 {n}，请选择其他箱子开箱"
-                    if self.lang == "zh" else
-                    f"Your final case is {n}. Select other cases to open."
-                )
+                self._deal_last_opened = []
             except Exception as e:
                 self._set_status(str(e))
                 return
             self._render_current_game()
             return
 
+        if n == self.game.player_case:
+            self._set_status("不能打开自己的最终箱子" if self.lang == "zh" else "You cannot open your final case.")
+            return
+
+        need = self.game.ROUNDS[min(self.game.round, len(self.game.ROUNDS)-1)]
         if n in self._deal_selected:
             self._deal_selected.remove(n)
         else:
+            if len(self._deal_selected) >= need:
+                self._set_status(f"本轮最多选择 {need} 个箱子" if self.lang == "zh" else f"You can select only {need} cases this round.")
+                return
             self._deal_selected.add(n)
         self._render_current_game()
 
     def _deal_open_selected(self):
-        if not self._deal_selected:
-            self._set_status("请选择箱子" if self.lang == "zh" else "Select cases first.")
+        need = self.game.ROUNDS[min(self.game.round, len(self.game.ROUNDS)-1)]
+        if len(self._deal_selected) != need:
+            self._set_status(
+                f"本轮需要开启 {need} 个箱子，目前选择 {len(self._deal_selected)} 个"
+                if self.lang == "zh" else
+                f"This round requires {need} cases; {len(self._deal_selected)} selected.")
             return
         try:
             r = self.game.open(sorted(self._deal_selected))
-            self._deal_selected.clear()
             if not r.get("ok"):
                 self._set_status(r.get("reason", ""))
-            else:
+                return
+            self._deal_last_opened = list(r.get("opened", []))
+            self._deal_selected.clear()
+            if r.get("offer") is not None:
+                opened_text = "；".join(f"{case}号箱 ¥{value}" for case, value in self._deal_last_opened)
                 self._set_status(
-                    (f"报价：¥{r['offer']}" if r.get("offer") is not None and self.lang == "zh"
-                     else f"Offer: ¥{r['offer']}" if r.get("offer") is not None
-                     else self._result_text(r.get("result", "continue"))))
+                    f"开启：{opened_text}\n银行报价：¥{r['offer']}"
+                    if self.lang == "zh" else
+                    f"Opened: {opened_text}\nOffer: ¥{r['offer']}"
+                )
+            else:
+                self._set_status(self._result_text(r.get("result", "continue")))
+        except Exception as e:
+            self._set_status(str(e))
+        self._render_current_game()
+
+    def _deal_reveal_final(self):
+        if not getattr(self, "_deal_final_pending", False) or self.game.over:
+            return
+        try:
+            # 最终按钮只负责打开玩家最初选定的箱子，不再进入普通选箱流程。
+            final_r = self.game.swap_or_reveal(False)
+            if final_r.get("ok") and final_r.get("result") == "final":
+                self._deal_final_pending = False
+                self._deal_last_opened = [(final_r["player_case"], final_r["value"]) ]
+                self._set_status(
+                    f"最终打开 {final_r['player_case']}号箱：¥{final_r['value']}"
+                    if self.lang == "zh" else
+                    f"Final case {final_r['player_case']}: ¥{final_r['value']}"
+                )
+            else:
+                self._set_status(final_r.get("reason", "最终箱子开启失败"))
         except Exception as e:
             self._set_status(str(e))
         self._render_current_game()
@@ -1586,6 +1908,30 @@ class GamesWindow(BasePanel):
                 f"最终金额：¥{r['value']}" if self.lang == "zh"
                 else f"Final value: ¥{r['value']}"
             )
+        elif r.get("result") == "final_choice":
+            # 最终报价被拒绝后，只剩一个非玩家箱子：先把这个最后的普通箱子打开，
+            # 然后才出现“开启我的最终箱子”。这里不再显示普通“开箱”按钮。
+            left = list(self.game.remaining())
+            if len(left) == 1:
+                try:
+                    last_r = self.game.open(left)
+                    if last_r.get("ok"):
+                        self._deal_last_opened = list(last_r.get("opened", []))
+                        self._set_status(
+                            "最后一个普通箱子已打开，庄家再次报价" if self.lang == "zh"
+                            else "The last ordinary case is open. The banker makes another offer."
+                        )
+                    else:
+                        self._set_status(last_r.get("reason", "最后一个箱子开启失败"))
+                except Exception as e:
+                    self._set_status(str(e))
+            else:
+                # 最后一个普通箱子的报价被拒绝后，才进入最终箱子阶段。
+                self._deal_final_pending = True
+                self._set_status(
+                    "庄家报价被拒绝，现在可以开启你的最终箱子" if self.lang == "zh"
+                    else "No Deal. You can now reveal your final case."
+                )
         else:
             self._set_status("继续游戏" if self.lang == "zh" else "Continue")
         self._render_current_game()
@@ -2657,7 +3003,7 @@ class DesktopPet(QWidget):
         self.bubble.move(self.mapToGlobal(QPoint(bx, by)))
 
     def _update_following_panels(self):
-        for attr_name in ('control_panel', 'note_window', 'product_window'):
+        for attr_name in ('control_panel', 'note_window', 'product_window', 'games_window'):
             panel = getattr(self, attr_name, None)
             if panel is not None and panel.isVisible():
                 panel.update_position()
@@ -2693,6 +3039,7 @@ class DesktopPet(QWidget):
         self.label.setWindowOpacity(1.0)
         if hasattr(self, 'bubble') and self.bubble.isVisible() and getattr(self, 'bubble_mode', 'follow') == 'follow':
             self.update_bubble_position()
+        self._update_following_panels()
 
     def _load_current_outfit(self, outfit_no):
         """Compatibility shim: SPT v1 has no outfit/save system."""

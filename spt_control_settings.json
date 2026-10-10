@@ -1,13 +1,13 @@
 {
   "tomato_minutes": 5,
   "drink_enabled": true,
-  "drink_minutes": 5,
+  "drink_minutes": 45,
   "sleep_enabled": true,
-  "sleep_hour": 22,
+  "sleep_hour": 23,
   "sleep_min": 0,
   "tomato_remaining": 0,
   "tomato_running": false,
-  "reminder_last_timestamp": 1791121316.541571,
+  "reminder_last_timestamp": 1791601916.378988,
   "reminder_elapsed": {
     "喝水": 0
   }
