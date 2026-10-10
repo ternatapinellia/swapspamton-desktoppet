@@ -2,7 +2,7 @@
 
 左键点击桌宠对话，右键点击显示菜单和退出，进入控制面板和商店界面和便签界面同样右键点击桌宠退出。可切换中英文，如有不适可暂停、隐藏桌宠和暂停自动对话，会暂停时间间隔性对话和点击桌宠时对话。可自行调节桌宠音量甚至关闭声音，固定时间会有喝水吃饭和睡觉提示，桌宠自带开机自启功能，如不需要可以自行去系统中关闭，或者是打开。右键菜单点击便签可以记录日常灵感或重要事件，点击小游戏可自行游玩多种已配置完毕的游戏。按下ctrl鼠标滚轮在桌宠上滑动可以调整桌宠大小。
 
-下载链接：https://github.com/ternatapinellia/swapspamton-desktoppet/releases/tag/v1.0
+下载链接：https://github.com/ternatapinellia/swapspamton-desktoppet/releases/tag/v2.1
 
 备注：该桌宠为初次发布版本，后续会再进行更新，调整词条方面和桌宠的图片等。
 
@@ -28,7 +28,7 @@
 
 ## Download
 
-[Download DeskPet V1.0](https://github.com/ternatapinellia/swapspamton-desktoppet/releases/tag/v1.0)
+[Download DeskPet V2.1](https://github.com/ternatapinellia/swapspamton-desktoppet/releases/tag/v2.1)
 
 ## Notes
 
@@ -38,3 +38,35 @@ This is the **initial release** of the desktop pet. Future updates will include 
 
 1. The English translation is currently **machine-translated**, so some translations may be inaccurate. The **farmland feature in the mini games** has not been translated into English yet.
 2. The Shop uses a **Japanese API** to retrieve its results and then translates them into Chinese. Therefore, the initial loading process may be relatively slow and can take approximately **30 seconds to 1 minute**.
+
+——
+
+v2.1更新
+
+调整了面板位置，修复了商品页面导致桌宠整体卡顿的bug
+
+——
+
+v2.0更新
+
+1.修复了面板会跟随桌宠乱动的bug，固定在了桌宠附近固定位置
+
+——
+
+v1.2更新
+
+1.增加了桌宠静止和说话动画形态
+
+2.扩充了小游戏成语接龙的词库
+
+——
+
+v1.21更新
+
+1.修复了成语接龙和deal游戏的bug
+
+——
+
+v1.1更新
+
+1.修复了deal游戏的bug
